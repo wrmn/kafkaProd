@@ -7,9 +7,11 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
 	"time"
 
+	"github.com/Shopify/sarama"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/gorilla/mux"
 )
@@ -44,7 +46,7 @@ func server() *mux.Router {
 func send(w http.ResponseWriter, r *http.Request) {
 
 	//wg.Wait()
-	var wg sync.WaitGroup
+	//var wg sync.WaitGroup
 	b, _ := ioutil.ReadAll(r.Body)
 	wg.Add(1)
 	//nice := rand.Intn(3000)
@@ -57,10 +59,10 @@ func send(w http.ResponseWriter, r *http.Request) {
 
 	go doProduce(broker, topic1, string(b), &wg)
 
-	wg.Wait()
-	sum, _ := doConsume()
+	go doConsume(msgChan)
 
-	w.Write([]byte(sum))
+	wg.Wait()
+	w.Write([]byte("ok"))
 }
 
 func doProduce(broker string, topic string, msg string, wg *sync.WaitGroup) {
@@ -127,34 +129,47 @@ func doProduce(broker string, topic string, msg string, wg *sync.WaitGroup) {
 //}
 //}
 
-func doConsume() (string, error) {
-	c, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers":    "localhost:9092",
-		"group.id":             group,
-		"auto.offset.reset":    "latest",
-		"enable.partition.eof": true,
-	})
+func doConsume(msgChan chan string) {
+	config := sarama.NewConfig()
+	config.Consumer.Return.Errors = true
+
+	brokers := []string{"localhost:9092"}
+
+	master, err := sarama.NewConsumer(brokers, config)
+
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := master.Close(); err != nil {
+			panic(err)
+		}
+	}()
+
+	consumer, err := master.ConsumePartition(topic2, 0, sarama.OffsetNewest)
 
 	if err != nil {
 		panic(err)
 	}
 
-	c.SubscribeTopics([]string{topic2}, nil)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
 
-	fmt.Println("this consumer is runnning")
+	msgCount := 0
 
-	for {
-		fmt.Println("in looping")
-		msg, err := c.ReadMessage(-1)
-		fmt.Print(err == nil)
-		if err == nil {
-			fmt.Printf("Message on %s: %s\n", msg.TopicPartition, string(msg.Value))
-			rawmsg := string(msg.Value)
-			return rawmsg, nil
-		} else {
-			// The client will automatically try to recover from all errors.
-			fmt.Printf("Consumer error: %v (%v)\n", err, msg)
-			return string(msg.Value), err
+	doneCh := make(chan struct{})
+
+	go func() {
+		select {
+		case err := <-consumer.Errors():
+			fmt.Println(err)
+		case msg := <-consumer.Messages():
+			msgCount++
+			fmt.Println("Received", string(msg.Key), string(msg.Value))
+		case <-signals:
+			doneCh <- struct{}{}
 		}
-	}
+	}()
+	<-doneCh
+	fmt.Println("Processed ", msgCount, "messages")
 }

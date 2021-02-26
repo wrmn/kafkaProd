@@ -1,12 +1,15 @@
 package main
 
+import "sync"
+
 var (
 	broker = "localhost:9092"
-	group  = "somethingss"
+	group  = "thigSroup"
 	topic1 = "channelKafkax"
 	topic2 = "kafkaBillerx"
 
-	//wg sync.WaitGroup
+	msgChan chan string
+	wg      sync.WaitGroup
 )
 
 type CardAcceptorData struct {
